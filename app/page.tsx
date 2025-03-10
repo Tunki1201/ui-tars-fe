@@ -45,13 +45,13 @@ export default function Home() {
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`mb-4 p-4 ${msg.isUser ? "text-right" : "text-left"}`}
+              className={`mb-4 p-4`}
             >
               <Card
                 className={`inline-block p-3 max-w-[80%] ${
                   msg.isUser
-                    ? "bg-primary/10 text-primary"
-                    : "bg-secondary text-secondary-foreground"
+                    ? "text-primary"
+                    : "text-secondary-foreground"
                 }`}
               >
                 {msg.text}
