@@ -3,7 +3,11 @@
 import { Button } from "@/components/ui/button"
 import { useTheme } from "next-themes"
 
-export default function TradeActions() {
+interface TradeActionsProps {
+  setInputValue: (value: string) => void;
+}
+
+export default function TradeActions({ setInputValue }: TradeActionsProps) {
   const { theme } = useTheme()
   const actions = [
     "Buy 200 USDC worth of WIF on Raydium.",
@@ -13,12 +17,13 @@ export default function TradeActions() {
   ]
 
   return (
-    <div className="flex justify-center gap-2 mb-4 max-w-3xl mx-auto">
+    <div className="flex justify-center gap-2 mb-4 max-w-3xl mx-auto cursor-pointer">
       {actions.map((action, i) => (
         <Button
           key={i}
           variant="secondary"
           className={`px-4 h-8 rounded-full text-sm ${theme === "light" ? "bg-white/50" : "bg-white/5"}`}
+          onClick={() => setInputValue(action)}
         >
           {action}
         </Button>
@@ -26,4 +31,3 @@ export default function TradeActions() {
     </div>
   )
 }
-
