@@ -17,6 +17,7 @@ export async function GET() {
       )
     }
 
+    //This is the response
     const data = await response.json()
     
     // If agent is running, also fetch the current screenshot
