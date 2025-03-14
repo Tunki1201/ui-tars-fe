@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 export async function GET() {
   try {
-    // Call the backend API to check if agent is running
+    // Single API call to get all agent information
     const response = await fetch('http://localhost:3333/v1/agent/running', {
       method: 'GET',
       headers: {
@@ -17,54 +17,31 @@ export async function GET() {
       )
     }
 
-    //This is the response
+    // Get the complete response from the enhanced endpoint
     const data = await response.json()
     
-    // If agent is running, also fetch the current screenshot
+    // Format the screenshot data if it exists
     let screenshot = null
-    if (data.isRunning) {
-      try {
-        const screenshotResponse = await fetch('http://localhost:3333/v1/screenshot/latest', {
-          method: 'GET',
-        })
-        
-        if (screenshotResponse.ok) {
-          const screenshotBlob = await screenshotResponse.blob()
-          const screenshotBase64 = await blobToBase64(screenshotBlob)
-          screenshot = { dataUrl: screenshotBase64 }
-        }
-      } catch (screenshotError) {
-        console.error('Error fetching screenshot:', screenshotError)
+    if (data.isRunning && data.screenshot) {
+      screenshot = {
+        dataUrl: `data:${data.screenshot.format || 'image/jpeg'};base64,${data.screenshot.base64}`,
+        timestamp: data.screenshot.timestamp || new Date().toISOString()
       }
     }
     
-    // Also fetch task status to get any active task ID
-    let taskId = null
-    let taskStatus = null
-    try {
-      const taskStatusResponse = await fetch('http://localhost:3333/v1/task/current/status', {
-        method: 'GET',
-      })
-      
-      if (taskStatusResponse.ok) {
-        const taskData = await taskStatusResponse.json()
-        taskId = taskData.taskId
-        taskStatus = {
-          thinking: taskData.thinking,
-          instructions: taskData.instructions,
-          status: taskData.status,
-          isRunning: data.isRunning
-        }
-      }
-    } catch (taskError) {
-      console.error('Error fetching task status:', taskError)
+    // Format task status data
+    const taskStatus = {
+      thinking: data.thinking || false,
+      instructions: data.instruction || "",
+      status: data.status || "IDLE",
+      isRunning: data.isRunning || false
     }
 
     return NextResponse.json({
       isRunning: data.isRunning,
       status: data.status,
       timestamp: data.timestamp,
-      taskId,
+      taskId: data.taskId || null,
       taskStatus,
       screenshot
     })
@@ -75,14 +52,4 @@ export async function GET() {
       { status: 500 }
     )
   }
-}
-
-// Helper function to convert Blob to base64
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => resolve(reader.result as string)
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
 }
