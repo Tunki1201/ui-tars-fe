@@ -81,40 +81,53 @@ export default function Home() {
     }
   }, [currentBotMessage?.screenshotUrl, displayedScreenshotUrl])
 
-    // Check if agent is running when page loads
-    useEffect(() => {
-      const checkAgentStatus = async () => {
-        try {
-          const response = await fetch('/api/checkAgent')
-          if (!response.ok) return
+  useEffect(() => {
+    const checkAgentStatus = async () => {
+      try {
+        const response = await fetch('/api/checkAgent')
+        if (!response.ok) return
+        
+        const data = await response.json()
+        
+        if (data.isRunning) {
+          // If agent is running, update the status
+          setAgentStatus(data.status || "RUNNING")
           
-          const data = await response.json()
-          
-          if (data.isRunning) {
-            // If agent is running, update the status
-            setAgentStatus(data.status || "RUNNING")
-            
-            // Optionally update UI to show that agent is already running
-            setCurrentBotMessage({
-              text: `Agent is currently running with status: ${data.status}`,
-              isUser: false,
-              isScreenshot: false,
-              messageId: `bot-${Date.now()}`,
-              timestamp: Date.now(),
-              taskStatus: {
-                status: data.status,
-                isRunning: true
-              }
-            })
+          // Store the active task ID if available
+          if (data.taskId) {
+            activeTaskIdRef.current = data.taskId
           }
-        } catch (error) {
-          console.error("Error checking agent status:", error)
+          
+          // Initialize bot message with available data
+          setCurrentBotMessage({
+            text: data.taskStatus?.instructions || `Agent is currently running with status: ${data.status}`,
+            isUser: false,
+            isScreenshot: !!data.screenshot,
+            screenshotUrl: data.screenshot?.dataUrl || null,
+            messageId: `bot-${Date.now()}`,
+            timestamp: Date.now(),
+            taskId: data.taskId,
+            taskStatus: data.taskStatus
+          })
+          
+          // If there's a screenshot, update the display state
+          if (data.screenshot?.dataUrl) {
+            setDisplayedScreenshotUrl(data.screenshot.dataUrl)
+          }
+          
+          // Start polling for updates if there's an active task
+          if (data.taskId) {
+            startPolling(data.taskId)
+          }
         }
+      } catch (error) {
+        console.error("Error checking agent status:", error)
       }
-      
-      checkAgentStatus()
-    }, []) // Run only on mount
+    }
     
+    checkAgentStatus()
+  }, []) // Run only on mount
+
   // Clean up polling when component unmounts
   useEffect(() => {
     return () => {
