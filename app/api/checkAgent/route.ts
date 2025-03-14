@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 export async function GET() {
   try {
     // Call the backend API to check if agent is running
-    const response = await fetch('http://localhost:3333/v1/agent/status', {
+    const response = await fetch('http://localhost:3333/v1/agent/running', {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
