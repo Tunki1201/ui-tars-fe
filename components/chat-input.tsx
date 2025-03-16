@@ -69,11 +69,6 @@ export default function ChatInput({
       setInputValue("");
       setShowWarningModal(false);
       
-      // // Small delay to ensure the stop request completes
-      // setTimeout(() => {
-      //   onSendMessage(messageToSend);
-      //   setIsProcessing(false);
-      // }, 500);
     } catch (error) {
       console.error("Error processing request:", error);
       setIsProcessing(false);
