@@ -190,7 +190,7 @@ export default function Home() {
     
     // Check for completed task
     if (!socketAgentStatus.isRunning && activeTaskIdRef.current) {
-      if (socketAgentStatus.status === "END" || socketAgentStatus.status === "STOPPED") {
+      if (socketAgentStatus.status === "end" || socketAgentStatus.status === "stopped") {
         // Task completed, clear active task
         activeTaskIdRef.current = null;
       }
