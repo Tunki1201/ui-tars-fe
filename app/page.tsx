@@ -111,91 +111,100 @@ export default function Home() {
     img.src = screenshotUrl;
   }, []);
 
+  // Add at the top with your other refs:
+const prevStatusRef = useRef<string | null>(null);
+
   // Update UI based on socket status
-  useEffect(() => {
-    if (!socketAgentStatus) return;
+useEffect(() => {
+  if (!socketAgentStatus) return;
+  
+  // Compare previous status with new status to prevent loops
+  const statusChanged = prevStatusRef.current !== socketAgentStatus.status;
+  prevStatusRef.current = socketAgentStatus.status;
+  
+  // Only update the state if the status has actually changed
+  if (statusChanged) {
+    setAgentStatus(socketAgentStatus.status || "IDLE");
+  }
+  
+  if (socketAgentStatus.taskId) {
+    console.log("Updating active taskId from socket to:", socketAgentStatus.taskId);
+    activeTaskIdRef.current = socketAgentStatus.taskId;
+  }
+  
+  // Process screenshot if available
+  if (socketAgentStatus.screenshot && socketAgentStatus.screenshot.base64) {
+    console.log("New screenshot received, timestamp:", socketAgentStatus.screenshot.timestamp);
     
-    // Update agent status
-    setAgentStatus(socketAgentStatus.status || "IDLE")
-    
-    if (socketAgentStatus.taskId) {
-      console.log("Updating active taskId from socket to:", socketAgentStatus.taskId);
-      activeTaskIdRef.current = socketAgentStatus.taskId;
-    }
-    
-    // Process screenshot if available
-    if (socketAgentStatus.screenshot && socketAgentStatus.screenshot.base64) {
-      console.log("New screenshot received, timestamp:", socketAgentStatus.screenshot.timestamp);
+    // Use the updateScreenshot function with correct format
+    updateScreenshot(
+      socketAgentStatus.screenshot.base64,
+      `image/${socketAgentStatus.screenshot.format || 'jpeg'}`
+    );
+  }
+  
+  // Update bot message with received data
+  if (socketAgentStatus.isRunning || 
+      (currentBotMessage && activeTaskIdRef.current === socketAgentStatus.taskId)) {
       
-      // Use the updateScreenshot function with correct format
-      updateScreenshot(
-        socketAgentStatus.screenshot.base64,
-        `image/${socketAgentStatus.screenshot.format || 'jpeg'}`
-      );
-    }
-    
-    // Update bot message with received data
-    if (socketAgentStatus.isRunning || 
-        (currentBotMessage && activeTaskIdRef.current === socketAgentStatus.taskId)) {
+    setCurrentBotMessage(prev => {
+      // Create a new message if there's no existing one
+      if (!prev) {
+        const newMessage: MessageType = {
+          text: socketAgentStatus.instruction || `Agent is running with status: ${socketAgentStatus.status}`,
+          isUser: false,
+          isScreenshot: !!socketAgentStatus.screenshot,
+          screenshotUrl: displayedScreenshotUrl,
+          messageId: `bot-${Date.now()}`,
+          timestamp: Date.now(),
+          taskId: socketAgentStatus.taskId,
+          taskStatus: {
+            thinking: socketAgentStatus.thinking ? "true" : "false",
+            instructions: socketAgentStatus.instruction,
+            status: socketAgentStatus.status,
+            isRunning: socketAgentStatus.isRunning
+          }
+        };
         
-      setCurrentBotMessage(prev => {
-        // Create a new message if there's no existing one
-        if (!prev) {
-          const newMessage: MessageType = {
-            text: socketAgentStatus.instruction || `Agent is running with status: ${socketAgentStatus.status}`,
-            isUser: false,
-            isScreenshot: !!socketAgentStatus.screenshot,
-            screenshotUrl: displayedScreenshotUrl,
-            messageId: `bot-${Date.now()}`,
-            timestamp: Date.now(),
-            taskId: socketAgentStatus.taskId,
-            taskStatus: {
-              thinking: socketAgentStatus.thinking ? "true" : "false",
-              instructions: socketAgentStatus.instruction,
-              status: socketAgentStatus.status,
-              isRunning: socketAgentStatus.isRunning
-            }
-          };
-          
-          return newMessage;
-        }
-        
-        // Check if anything has actually changed to prevent unnecessary updates
-        const hasStatusChange = 
-          socketAgentStatus.thinking !== (prev.taskStatus?.thinking === "true") ||
-          socketAgentStatus.status !== prev.taskStatus?.status ||
-          socketAgentStatus.isRunning !== prev.taskStatus?.isRunning ||
-          socketAgentStatus.instruction !== prev.taskStatus?.instructions;
-            
-        // Only update if something has changed
-        if (hasStatusChange) {
-          // Update existing message
-          return {
-            ...prev,
-            screenshotUrl: displayedScreenshotUrl, // Use the current displayed URL
-            isScreenshot: !!displayedScreenshotUrl,
-            taskStatus: {
-              thinking: socketAgentStatus.thinking ? "true" : "false",
-              instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
-              status: socketAgentStatus.status || prev.taskStatus?.status,
-              isRunning: socketAgentStatus.isRunning
-            }
-          };
-        }
-        
-        // Return previous state if nothing changed
-        return prev;
-      });
-    }
-    
-    // Check for completed task
-    if (!socketAgentStatus.isRunning && activeTaskIdRef.current) {
-      if (socketAgentStatus.status === "end" || socketAgentStatus.status === "stopped") {
-        // Task completed, clear active task
-        activeTaskIdRef.current = null;
+        return newMessage;
       }
+      
+      // Check if anything has actually changed to prevent unnecessary updates
+      const hasStatusChange = 
+        socketAgentStatus.thinking !== (prev.taskStatus?.thinking === "true") ||
+        socketAgentStatus.status !== prev.taskStatus?.status ||
+        socketAgentStatus.isRunning !== prev.taskStatus?.isRunning ||
+        socketAgentStatus.instruction !== prev.taskStatus?.instructions;
+          
+      // Only update if something has changed
+      if (hasStatusChange) {
+        // Update existing message
+        return {
+          ...prev,
+          screenshotUrl: displayedScreenshotUrl, // Use the current displayed URL
+          isScreenshot: !!displayedScreenshotUrl,
+          taskStatus: {
+            thinking: socketAgentStatus.thinking ? "true" : "false",
+            instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
+            status: socketAgentStatus.status || prev.taskStatus?.status,
+            isRunning: socketAgentStatus.isRunning
+          }
+        };
+      }
+      
+      // Return previous state if nothing changed
+      return prev;
+    });
+  }
+  
+  // Check for completed task
+  if (!socketAgentStatus.isRunning && activeTaskIdRef.current) {
+    if (socketAgentStatus.status === "end" || socketAgentStatus.status === "stopped") {
+      // Task completed, clear active task
+      activeTaskIdRef.current = null;
     }
-  }, [socketAgentStatus, currentBotMessage, displayedScreenshotUrl, updateScreenshot]);
+  }
+}, [socketAgentStatus, displayedScreenshotUrl, updateScreenshot]); // Removed currentBotMessage dependency
 
   // Added proper typing for the polling function
   const startPolling = useCallback((pollingData: PollingData, taskId: string) => {
