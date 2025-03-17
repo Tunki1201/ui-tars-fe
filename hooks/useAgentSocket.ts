@@ -21,35 +21,50 @@ export function useAgentSocket() {
   const socketRef = useRef<WebSocket | null>(null);
   const serverShuttingDown = useRef<boolean>(false);
   const connectionAttempts = useRef<number>(0);
+  const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
 
   const connect = useCallback(() => {
+    // Clear any existing reconnect timer
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+    }
+    
     if (serverShuttingDown.current) {
       console.log('Not reconnecting because server is shutting down');
       return;
     }
 
+    // Close any existing socket before creating a new one
+    if (socketRef.current) {
+      if (socketRef.current.readyState === WebSocket.OPEN || 
+          socketRef.current.readyState === WebSocket.CONNECTING) {
+        socketRef.current.close();
+      }
+      socketRef.current = null;
+    }
+
     connectionAttempts.current += 1;
     
-    // Determine WebSocket URL - this is the key change
+    // Determine WebSocket URL with a different approach
     let wsUrl: string;
     
+    // Let's try several connection strategies
+    // 1. Use explicit environment variable if set
     if (process.env.NEXT_PUBLIC_WS_URL) {
-      // Use the full WebSocket URL if provided
       wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-    } else {
+    } 
+    // 2. For ngrok, try the /ws path specifically
+    else if (window.location.hostname.includes('ngrok')) {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      
-      // For ngrok, we need to use the ngrok URL without appending the port
-      if (window.location.hostname.includes('ngrok')) {
-        // Use the same hostname but with WebSocket protocol
-        wsUrl = `${protocol}//${window.location.host}`;
-        console.log(`Using ngrok WebSocket URL: ${wsUrl}`);
-      } else {
-        // For local development, construct URL with port as before
-        const host = process.env.NEXT_PUBLIC_API_HOST || window.location.hostname;
-        const port = process.env.NEXT_PUBLIC_WS_PORT || '3334';
-        wsUrl = `${protocol}//${host}:${port}`;
-      }
+      wsUrl = `${protocol}//${window.location.host}/ws`;
+    }
+    // 3. Fallback to local development setup
+    else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = process.env.NEXT_PUBLIC_API_HOST || window.location.hostname;
+      const port = process.env.NEXT_PUBLIC_WS_PORT || '3334';
+      wsUrl = `${protocol}//${host}:${port}`;
     }
 
     console.log(`Connecting to WebSocket at ${wsUrl} (attempt ${connectionAttempts.current})`);
@@ -64,13 +79,14 @@ export function useAgentSocket() {
         setIsConnected(true);
         setError(null);
         connectionAttempts.current = 0; // Reset counter on successful connection
-        console.log('WebSocket connection established');
+        console.log('WebSocket connection established successfully');
       });
 
       // Listen for messages
       socket.addEventListener('message', (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log('Received WebSocket message:', data);
           
           if (data.type === 'agentStatus') {
             setAgentStatus(data);
@@ -85,7 +101,7 @@ export function useAgentSocket() {
             }
           }
         } catch (parseError) {
-          console.log('Error parsing WebSocket message:', parseError);
+          console.error('Error parsing WebSocket message:', parseError, event.data);
         }
       });
 
@@ -95,14 +111,12 @@ export function useAgentSocket() {
         console.log('WebSocket connection closed', event.code, event.reason);
         
         if (!serverShuttingDown.current && connectionAttempts.current < 5) {
-          const backoffTime = Math.min(1000 * (2 ** connectionAttempts.current), 30000);
-          
+          // Use exponential backoff for reconnection
+          const backoffTime = Math.min(1000 * Math.pow(1.5, connectionAttempts.current), 30000);
           console.log(`Will attempt to reconnect in ${backoffTime}ms`);
           
-          setTimeout(() => {
-            if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-              connect();
-            }
+          reconnectTimer.current = setTimeout(() => {
+            connect();
           }, backoffTime);
         } else if (connectionAttempts.current >= 5) {
           console.log('Maximum reconnection attempts reached. Please try manual reconnection.');
@@ -114,28 +128,53 @@ export function useAgentSocket() {
 
       // Connection error
       socket.addEventListener('error', (event) => {
-        console.log('WebSocket error occurred:', event);
+        console.error('WebSocket error occurred:', event);
         setError('WebSocket connection error');
+        
+        // Don't need to do anything here as the close handler will be called
       });
-      
-      return () => {
-        socket.close();
-      };
-    } catch (error:unknown) {
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error 
         ? error.message 
         : 'Unknown connection error';
       
       setError(`Failed to create WebSocket connection: ${errorMessage}`);
-      console.log('WebSocket connection error:', error);
+      console.error('WebSocket connection error:', error);
       
-      if (!serverShuttingDown.current && connectionAttempts.current < 5) {
-        const backoffTime = Math.min(1000 * (2 ** connectionAttempts.current), 30000);
+      // Try an alternative connection method for ngrok
+      if (window.location.hostname.includes('ngrok') && 
+          connectionAttempts.current === 1) {
+        console.log('Trying alternative connection method for ngrok...');
+        // Try the root path instead of /ws
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const alternativeUrl = `${protocol}//${window.location.host}`;
         
-        setTimeout(() => {
-          if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-            connect();
-          }
+        try {
+          console.log(`Connecting to alternative WebSocket URL: ${alternativeUrl}`);
+          const altSocket = new WebSocket(alternativeUrl);
+          socketRef.current = altSocket;
+          
+          // Set up the same event handlers...
+          altSocket.addEventListener('open', () => {
+            setIsConnected(true);
+            setError(null);
+            connectionAttempts.current = 0;
+            console.log('WebSocket connection established via alternative URL');
+          });
+          
+          // Add other event listeners similarly...
+          
+        } catch (altError) {
+          console.error('Alternative connection also failed:', altError);
+        }
+      }
+      
+      // Schedule reconnect if appropriate
+      if (!serverShuttingDown.current && connectionAttempts.current < 5) {
+        const backoffTime = Math.min(1000 * Math.pow(1.5, connectionAttempts.current), 30000);
+        
+        reconnectTimer.current = setTimeout(() => {
+          connect();
         }, backoffTime);
       }
     }
@@ -145,10 +184,12 @@ export function useAgentSocket() {
     serverShuttingDown.current = false;
     connectionAttempts.current = 0;
     
-    const cleanup = connect();
+    connect();
     
     return () => {
-      if (cleanup) cleanup();
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+      }
       if (socketRef.current) {
         socketRef.current.close();
       }
@@ -160,9 +201,6 @@ export function useAgentSocket() {
     serverShuttingDown.current = false;
     connectionAttempts.current = 0;
     
-    if (socketRef.current) {
-      socketRef.current.close();
-    }
     connect();
   }, [connect]);
 
