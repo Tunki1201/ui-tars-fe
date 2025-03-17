@@ -55,7 +55,7 @@ export function useAgentSocket() {
     } 
     // Use the specific ngrok URL you've established
     else if (window.location.hostname.includes('ngrok')) {
-      wsUrl = 'wss://7d50-159-100-29-254.ngrok-free.app';
+      wsUrl = 'wss://08b6-159-100-29-254.ngrok-free.app';
     }
     // Fallback to local development setup
     else {
