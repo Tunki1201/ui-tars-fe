@@ -46,20 +46,18 @@ export function useAgentSocket() {
 
     connectionAttempts.current += 1;
     
-    // Determine WebSocket URL with a different approach
+    // Determine WebSocket URL - using the ngrok URL directly
     let wsUrl: string;
     
-    // Let's try several connection strategies
-    // 1. Use explicit environment variable if set
+    // Use explicit environment variable if set
     if (process.env.NEXT_PUBLIC_WS_URL) {
       wsUrl = process.env.NEXT_PUBLIC_WS_URL;
     } 
-    // 2. For ngrok, try the /ws path specifically
+    // Use the specific ngrok URL you've established
     else if (window.location.hostname.includes('ngrok')) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${protocol}//${window.location.host}/ws`;
+      wsUrl = 'wss://7d50-159-100-29-254.ngrok-free.app';
     }
-    // 3. Fallback to local development setup
+    // Fallback to local development setup
     else {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = process.env.NEXT_PUBLIC_API_HOST || window.location.hostname;
@@ -86,7 +84,6 @@ export function useAgentSocket() {
       socket.addEventListener('message', (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('Received WebSocket message:', data);
           
           if (data.type === 'agentStatus') {
             setAgentStatus(data);
@@ -101,7 +98,7 @@ export function useAgentSocket() {
             }
           }
         } catch (parseError) {
-          console.error('Error parsing WebSocket message:', parseError, event.data);
+          console.log('Error parsing WebSocket message:', parseError);
         }
       });
 
@@ -127,11 +124,10 @@ export function useAgentSocket() {
       });
 
       // Connection error
-      socket.addEventListener('error', (event) => {
-        console.error('WebSocket error occurred:', event);
+      socket.addEventListener('error', () => {
+        console.log('WebSocket error occurred');
         setError('WebSocket connection error');
-        
-        // Don't need to do anything here as the close handler will be called
+        // Don't need to reconnect here - the close handler will be called
       });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error 
@@ -139,35 +135,7 @@ export function useAgentSocket() {
         : 'Unknown connection error';
       
       setError(`Failed to create WebSocket connection: ${errorMessage}`);
-      console.error('WebSocket connection error:', error);
-      
-      // Try an alternative connection method for ngrok
-      if (window.location.hostname.includes('ngrok') && 
-          connectionAttempts.current === 1) {
-        console.log('Trying alternative connection method for ngrok...');
-        // Try the root path instead of /ws
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const alternativeUrl = `${protocol}//${window.location.host}`;
-        
-        try {
-          console.log(`Connecting to alternative WebSocket URL: ${alternativeUrl}`);
-          const altSocket = new WebSocket(alternativeUrl);
-          socketRef.current = altSocket;
-          
-          // Set up the same event handlers...
-          altSocket.addEventListener('open', () => {
-            setIsConnected(true);
-            setError(null);
-            connectionAttempts.current = 0;
-            console.log('WebSocket connection established via alternative URL');
-          });
-          
-          // Add other event listeners similarly...
-          
-        } catch (altError) {
-          console.error('Alternative connection also failed:', altError);
-        }
-      }
+      console.log('WebSocket connection error:', error);
       
       // Schedule reconnect if appropriate
       if (!serverShuttingDown.current && connectionAttempts.current < 5) {
