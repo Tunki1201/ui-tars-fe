@@ -85,7 +85,7 @@ export function useAgentSocket() {
             }
           }
         } catch (parseError) {
-          console.error('Error parsing WebSocket message:', parseError);
+          console.log('Error parsing WebSocket message:', parseError);
         }
       });
 
@@ -114,7 +114,7 @@ export function useAgentSocket() {
 
       // Connection error
       socket.addEventListener('error', (event) => {
-        console.error('WebSocket error occurred:', event);
+        console.log('WebSocket error occurred:', event);
         setError('WebSocket connection error');
       });
       
@@ -127,7 +127,7 @@ export function useAgentSocket() {
         : 'Unknown connection error';
       
       setError(`Failed to create WebSocket connection: ${errorMessage}`);
-      console.error('WebSocket connection error:', error);
+      console.log('WebSocket connection error:', error);
       
       if (!serverShuttingDown.current && connectionAttempts.current < 5) {
         const backoffTime = Math.min(1000 * (2 ** connectionAttempts.current), 30000);
