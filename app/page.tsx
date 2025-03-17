@@ -476,14 +476,14 @@ const stopTask = async (taskId?: string) => {
     console.log("Abort response:", abortData);
     
     // Immediately update UI state rather than waiting for socket
-    setAgentStatus("STOPPED");
+    setAgentStatus("stopped");
     setCurrentBotMessage((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
         taskStatus: {
           ...prev.taskStatus,
-          status: "STOPPED",
+          status: "stopped",
           isRunning: false,
           instructions: "Agent stopped successfully",
         },
@@ -502,7 +502,7 @@ const stopTask = async (taskId?: string) => {
           console.log("Final task status:", statusData);
           
           // Force UI update with final status
-          setAgentStatus(statusData.status || "STOPPED");
+          setAgentStatus(statusData.status || "stopped");
         }
       } catch (statusError) {
         console.warn("Error checking final status:", statusError);
