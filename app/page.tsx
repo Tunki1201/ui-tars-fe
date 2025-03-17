@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import Sidebar from "@/components/sidebar"
 import ChatHeader from "@/components/chat-header"
 import WelcomeModal from "@/components/welcome-modal"
@@ -56,14 +56,35 @@ export default function Home() {
     agentStatus: socketAgentStatus, 
     isConnected, 
     isServerShuttingDown,
-    // reconnect
+    // reconnect,
+    error: socketError
   } = useAgentSocket()
+
+  // Add debugging useEffect to track WebSocket status
+  useEffect(() => {
+    console.log("WebSocket connection status:", isConnected);
+    console.log("WebSocket error:", socketError);
+  }, [isConnected, socketError]);
+
+  // Add debugging for socket agent status
+  useEffect(() => {
+    if (socketAgentStatus) {
+      console.log("Received agent status update:", socketAgentStatus);
+      console.log("Current task ID:", activeTaskIdRef.current);
+      console.log("Status task ID:", socketAgentStatus.taskId);
+    }
+  }, [socketAgentStatus]);
 
   // Update UI based on socket status
   useEffect(() => {
     if (socketAgentStatus) {
       // Update agent status
       setAgentStatus(socketAgentStatus.status || "IDLE")
+      
+      console.log(`Updating UI with agent status: ${socketAgentStatus.status}, 
+                  running: ${socketAgentStatus.isRunning}, 
+                  task: ${socketAgentStatus.taskId}, 
+                  active task: ${activeTaskIdRef.current}`);
       
       // Update active task ID
       if (socketAgentStatus.taskId) {
@@ -74,11 +95,14 @@ export default function Home() {
       let screenshotUrl: string | null = null
       if (socketAgentStatus.screenshot && socketAgentStatus.screenshot.base64) {
         screenshotUrl = `data:${socketAgentStatus.screenshot.format || 'image/jpeg'};base64,${socketAgentStatus.screenshot.base64}`
+        console.log("Got screenshot in status update, length:", socketAgentStatus.screenshot.base64.length);
       }
       
       // Update bot message with received data
       if (socketAgentStatus.isRunning || 
           (currentBotMessage && activeTaskIdRef.current === socketAgentStatus.taskId)) {
+        
+        console.log("Updating bot message with status data");
         
         setCurrentBotMessage(prev => {
           // Create a new message if there's no existing one
@@ -126,6 +150,7 @@ export default function Home() {
             return {
               ...prev,
               screenshotUrl: hasNewScreenshot ? screenshotUrl : prev.screenshotUrl,
+              isScreenshot: hasNewScreenshot ? true : prev.isScreenshot,
               taskStatus: {
                 thinking: socketAgentStatus.thinking ? "true" : "false",
                 instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
@@ -144,6 +169,7 @@ export default function Home() {
       if (!socketAgentStatus.isRunning && activeTaskIdRef.current) {
         if (socketAgentStatus.status === "END" || socketAgentStatus.status === "STOPPED") {
           // Task completed, clear active task
+          console.log("Task completed, clearing active task ID");
           activeTaskIdRef.current = null;
         }
       }
@@ -193,7 +219,7 @@ export default function Home() {
     }
   }, [currentBotMessage?.screenshotUrl, displayedScreenshotUrl]);
   
-// Check initial agent status on mount
+  // Check initial agent status on mount
   useEffect(() => {
     const checkInitialAgentStatus = async () => {
       try {
@@ -256,10 +282,11 @@ export default function Home() {
 
     // Reset screenshot state for new conversation
     setDisplayedScreenshotUrl(null)
-    // previousScreenshotUrlRef.current = null;
     loadingUrlRef.current = null;
+    currentBotMessageUrlRef.current = null;
 
     try {
+      console.log("Sending message to agent API:", message);
       const response = await fetch("/api/runAgent", {
         method: "POST",
         headers: {
@@ -273,6 +300,7 @@ export default function Home() {
       }
 
       const data = await response.json()
+      console.log("Received response from runAgent API:", data);
 
       // Set the task ID for reference (socket will handle the updates)
       if (data.taskId) {
@@ -288,6 +316,14 @@ export default function Home() {
         messageId: `bot-${Date.now()}`,
         timestamp: Date.now(),
       })
+      
+      // If WebSocket isn't connected, start polling for updates
+      if (!isConnected && data._polling) {
+        console.log("WebSocket not connected, starting polling instead");
+        pollForStatus(data.taskId, data._polling?.statusEndpoint, data._polling?.pollingIntervalMs || 2000);
+      } else {
+        console.log("WebSocket connected, waiting for updates");
+      }
     } catch (error) {
       console.error("Error sending message:", error)
 
@@ -302,6 +338,7 @@ export default function Home() {
     }
   }
 
+  // Enhanced stopTask with better debugging and fallback
   const stopTask = async (taskId: string) => {
     // Don't allow stopping tasks if server is shutting down
     if (isServerShuttingDown) {
@@ -309,9 +346,30 @@ export default function Home() {
       return
     }
 
-    if (!taskId) return
+    if (!taskId) {
+      console.log("No taskId provided for stopTask")
+      return
+    }
+
+    console.log(`Attempting to stop task: ${taskId}`)
 
     try {
+      // First, update the UI immediately to show the stopping action
+      setAgentStatus("STOPPING")
+      setCurrentBotMessage((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          taskStatus: {
+            ...prev.taskStatus,
+            status: "STOPPING",
+            isRunning: true,
+            instructions: "Stopping agent...",
+          },
+        }
+      })
+
+      // Make the API call
       const response = await fetch("/api/stopAgent", {
         method: "POST",
         headers: {
@@ -320,11 +378,68 @@ export default function Home() {
         body: JSON.stringify({ taskId }),
       })
 
-      if (!response.ok) {
-        throw new Error("Failed to stop agent")
+      console.log("Stop agent response status:", response.status)
+      
+      // Get the response data
+      let data = null
+      try {
+        data = await response.json()
+        console.log("Stop agent response data:", data)
+      } catch (e) {
+        console.log("Could not parse response JSON:", e)
       }
       
-      // The socket will update our UI once the agent is actually stopped
+      if (!response.ok) {
+        throw new Error(`Failed to stop agent: ${response.statusText}`)
+      }
+      
+      // Update UI immediately after successful stop, don't wait for WebSocket
+      setAgentStatus("STOPPED")
+      setCurrentBotMessage((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          taskStatus: {
+            ...prev.taskStatus,
+            status: "STOPPED",
+            isRunning: false,
+            instructions: "Agent was stopped by user request.",
+          },
+        }
+      })
+      
+      // Clear the active task ID
+      activeTaskIdRef.current = null
+      
+      // If we have a status endpoint from the response, check it for final status
+      if (data && data._polling && data._polling.statusEndpoint) {
+        try {
+          const statusResponse = await fetch(data._polling.statusEndpoint)
+          if (statusResponse.ok) {
+            const statusData = await statusResponse.json()
+            console.log("Final status after stop:", statusData)
+            
+            // Update with final status if available
+            if (statusData.status) {
+              setAgentStatus(statusData.status)
+              setCurrentBotMessage((prev) => {
+                if (!prev) return prev
+                return {
+                  ...prev,
+                  taskStatus: {
+                    ...prev.taskStatus,
+                    status: statusData.status,
+                    isRunning: false,
+                    instructions: statusData.message || prev.taskStatus?.instructions,
+                  },
+                }
+              })
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching final status:", error)
+        }
+      }
       
     } catch (error) {
       console.error("Error stopping task:", error)
@@ -346,6 +461,102 @@ export default function Home() {
       })
     }
   }
+
+  // Add polling function as a fallback when WebSocket is not available
+  const pollForStatus = useCallback((taskId: string, endpoint: string, interval: number) => {
+    if (!taskId || !endpoint) return;
+    
+    console.log(`Polling for status at ${endpoint} every ${interval}ms`);
+    
+    const poll = async () => {
+      try {
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+          console.error("Error polling for status:", response.statusText);
+          return;
+        }
+        
+        const data = await response.json();
+        console.log("Polled status:", data);
+        
+        // Update UI with polled status
+        const status = data.status || "RUNNING";
+        setAgentStatus(status);
+        
+        // Update bot message
+        setCurrentBotMessage(prev => {
+          if (!prev) return prev;
+          
+          return {
+            ...prev,
+            text: data.statusMessage || "Processing...",
+            taskStatus: {
+              thinking: data.thinking ? "true" : "false",
+              instructions: data.instruction || prev.taskStatus?.instructions,
+              status: status,
+              isRunning: status !== "END" && status !== "STOPPED" && status !== "ERROR"
+            }
+          };
+        });
+        
+        // If there's a screenshot, handle it
+        if (data.screenshot && data.screenshot.dataUrl) {
+          const screenshotUrl = data.screenshot.dataUrl;
+          console.log("Got screenshot in polling, setting it");
+          
+          // Only update if we have a new screenshot
+          if (screenshotUrl !== currentBotMessageUrlRef.current && 
+              screenshotUrl !== loadingUrlRef.current) {
+            
+            loadingUrlRef.current = screenshotUrl;
+            setIsImageLoading(true);
+            
+            // Preload the image
+            const img = new window.Image();
+            img.onload = () => {
+              if (loadingUrlRef.current === screenshotUrl) {
+                setDisplayedScreenshotUrl(screenshotUrl);
+                setIsImageLoading(false);
+                loadingUrlRef.current = null;
+                currentBotMessageUrlRef.current = screenshotUrl;
+                
+                // Update bot message to show screenshot
+                setCurrentBotMessage(prev => {
+                  if (!prev) return prev;
+                  return {
+                    ...prev,
+                    isScreenshot: true,
+                    screenshotUrl: screenshotUrl
+                  };
+                });
+              }
+            };
+            
+            img.onerror = () => {
+              if (loadingUrlRef.current === screenshotUrl) {
+                setIsImageLoading(false);
+                loadingUrlRef.current = null;
+              }
+            };
+            
+            img.src = screenshotUrl;
+          }
+        }
+        
+        // Continue polling if task is still running
+        if (status !== "END" && status !== "STOPPED" && status !== "ERROR") {
+          setTimeout(poll, interval);
+        } else {
+          console.log("Task completed, stopping polling");
+        }
+      } catch (error) {
+        console.error("Error polling for status:", error);
+      }
+    };
+    
+    // Start polling
+    poll();
+  }, []);
 
   // Render the current message based on view mode
   const renderCurrentMessage = () => {
@@ -443,6 +654,18 @@ export default function Home() {
     }
   }
 
+  // // Add explicit reconnection function
+  // const tryReconnect = useCallback(() => {
+  //   console.log("Manually triggering reconnection");
+  //   reconnect();
+  // }, [reconnect]);
+
+  // // Add connection status UI back
+  // const connectionStatus = !isConnected ? {
+  //   message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
+  //   bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
+  //   textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
+  // } : null;
 
   return (
     <div className={`flex h-screen ${theme === "light" ? "light-mode-gradient" : "bg-background"}`}>
@@ -470,7 +693,7 @@ export default function Home() {
               <span>{connectionStatus.message}</span>
               {!isServerShuttingDown && (
                 <button 
-                  onClick={reconnect}
+                  onClick={tryReconnect}
                   className="ml-2 underline text-xs hover:text-opacity-80"
                 >
                   Try reconnect
@@ -488,7 +711,7 @@ export default function Home() {
             inputValue={inputValue}
             setInputValue={setInputValue}
             onStopTask={stopTask}
-            // disabled={isServerShuttingDown || !isConnected}
+            // disabled={isServerShuttingDown} // Only disable on server shutdown
           />
         </div>
       </main>
