@@ -118,9 +118,9 @@ export default function Home() {
     // Update agent status
     setAgentStatus(socketAgentStatus.status || "IDLE")
     
-    // Update active task ID
     if (socketAgentStatus.taskId) {
-      activeTaskIdRef.current = socketAgentStatus.taskId
+      console.log("Updating active taskId from socket to:", socketAgentStatus.taskId);
+      activeTaskIdRef.current = socketAgentStatus.taskId;
     }
     
     // Process screenshot if available
@@ -388,98 +388,132 @@ export default function Home() {
     }
   }
 
-  const stopTask = async (taskId: string) => {
-    // Don't allow stopping tasks if server is shutting down
-    if (isServerShuttingDown) {
-      console.log("Cannot stop task - server is shutting down")
-      return
+  // Add a function to check current agent status and update taskId
+const checkCurrentAgent = useCallback(async () => {
+  try {
+    const response = await fetch("/api/agent/running");
+    if (!response.ok) return;
+    
+    const data = await response.json();
+    
+    // If agent is running, update the taskId
+    if (data.isRunning && data.taskId) {
+      console.log("Updating active taskId from API check to:", data.taskId);
+      activeTaskIdRef.current = data.taskId;
     }
+    
+    return data;
+  } catch (error) {
+    console.error("Error checking current agent:", error);
+    return null;
+  }
+}, []);
 
-    if (!taskId) {
-      console.log("No taskId provided for stopTask")
-      return
+// Call this when component mounts
+useEffect(() => {
+  // Check for any running agent when component mounts
+  checkCurrentAgent();
+}, [checkCurrentAgent]);
+
+// Modify the stopTask function to get the current taskId if needed
+const stopTask = async (taskId?: string) => {
+  // Don't allow stopping tasks if server is shutting down
+  if (isServerShuttingDown) {
+    console.log("Cannot stop task - server is shutting down")
+    return
+  }
+
+  // If no taskId provided, check if we have one in our ref
+  let targetTaskId = taskId || activeTaskIdRef.current;
+  
+  // If still no taskId, try to get it from the API
+  if (!targetTaskId) {
+    console.log("No taskId provided, checking current agent status");
+    const currentAgent = await checkCurrentAgent();
+    if (currentAgent?.taskId) {
+      targetTaskId = currentAgent.taskId;
     }
+  }
 
-    console.log(`Attempting to stop task: ${taskId}`)
+  if (!targetTaskId) {
+    console.log("No taskId available to stop task");
+    return;
+  }
 
+  console.log(`Attempting to stop task: ${targetTaskId}`);
+
+  try {
+    // First, update the UI immediately to show the stopping action
+    setAgentStatus("STOPPING");
+    
+    // Try direct abort first to ensure the agent stops regardless of monitoring
     try {
-      // First, update the UI immediately to show the stopping action
-      setAgentStatus("STOPPING")
-      setCurrentBotMessage((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          taskStatus: {
-            ...prev.taskStatus,
-            status: "STOPPING",
-            isRunning: true,
-            instructions: "Stopping agent...",
-          },
-        }
-      })
-
-      // Make the API call
-      const response = await fetch("/api/stopAgent", {
+      await fetch("/api/abortAgent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ taskId }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to stop agent")
-      }
-      
-      // Update UI after successful stop
-      setAgentStatus("STOPPED")
-      setCurrentBotMessage((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          taskStatus: {
-            ...prev.taskStatus,
-            status: "STOPPED",
-            isRunning: false,
-            instructions: "Agent stopped successfully",
-          },
-        }
-      })
-      
-      // Clear active task ID
-      activeTaskIdRef.current = null
-      
-      // Get final status just to be sure
-      try {
-        const statusResponse = await fetch(`/api/task-status/${taskId}`)
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json()
-          console.log("Final task status after stopping:", statusData)
-        }
-      } catch (statusError) {
-        console.warn("Error fetching final task status:", statusError)
-      }
-      
-    } catch (error) {
-      console.error("Error stopping task:", error)
-      
-      // Update UI with error state
-      setAgentStatus("ERROR")
-      setCurrentBotMessage((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          taskStatus: {
-            ...prev.taskStatus,
-            status: "ERROR",
-            isRunning: false,
-            instructions: "Error stopping task. Please try again.",
-          },
-        }
-      })
+        body: JSON.stringify({ taskId: targetTaskId }),
+      });
+    } catch (abortError) {
+      console.warn("Error with direct abort, continuing with regular stop:", abortError);
     }
+    
+    // Try regular stop endpoint
+    const response = await fetch("/api/stopAgent", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ taskId: targetTaskId }),
+    });
+    
+    // Don't throw on "No active monitoring" error
+    const data = await response.json();
+    const isNoMonitoringError = data.error?.includes("No active monitoring");
+    
+    if (!response.ok && !isNoMonitoringError) {
+      // throw new Error(data.error || "Failed to stop agent");
+      console.log('---------------------------this is an error from agent stopping------------',data.error || "Failed to stop agent")
+    }
+    
+    // Update UI to stopped state
+    setAgentStatus("STOPPED");
+    setCurrentBotMessage((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        taskStatus: {
+          ...prev.taskStatus,
+          status: "STOPPED",
+          isRunning: false,
+          instructions: "Agent stopped successfully",
+        },
+      };
+    });
+    
+    // Clear active task ID
+    activeTaskIdRef.current = null;
+    
+  } catch (error) {
+    console.error("Error stopping task:", error);
+    
+    // Still update UI to error state
+    setAgentStatus("ERROR");
+    setCurrentBotMessage((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        taskStatus: {
+          ...prev.taskStatus,
+          status: "ERROR",
+          isRunning: false,
+          instructions: "Error stopping task. Please try again.",
+        },
+      };
+    });
   }
-
+};
   // Render the current message based on view mode
   const renderCurrentMessage = () => {
     if (viewMode === "browser") {
