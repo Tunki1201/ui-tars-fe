@@ -19,23 +19,40 @@ export function useAgentSocket() {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  // Add a ref to track if server is shutting down
   const serverShuttingDown = useRef<boolean>(false);
+  const connectionAttempts = useRef<number>(0);
 
   const connect = useCallback(() => {
-    // Don't try to reconnect if server is shutting down
     if (serverShuttingDown.current) {
       console.log('Not reconnecting because server is shutting down');
       return;
     }
 
-    // Determine WebSocket URL (use secure WebSocket if on HTTPS)
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = process.env.NEXT_PUBLIC_API_HOST || window.location.hostname;
-    const port = process.env.NEXT_PUBLIC_WS_PORT || '3334'; // Updated to use WS_PORT (3334)
-    const wsUrl = `${protocol}//${host}:${port}`;
+    connectionAttempts.current += 1;
+    
+    // Determine WebSocket URL - this is the key change
+    let wsUrl: string;
+    
+    if (process.env.NEXT_PUBLIC_WS_URL) {
+      // Use the full WebSocket URL if provided
+      wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      
+      // For ngrok, we need to use the ngrok URL without appending the port
+      if (window.location.hostname.includes('ngrok')) {
+        // Use the same hostname but with WebSocket protocol
+        wsUrl = `${protocol}//${window.location.host}`;
+        console.log(`Using ngrok WebSocket URL: ${wsUrl}`);
+      } else {
+        // For local development, construct URL with port as before
+        const host = process.env.NEXT_PUBLIC_API_HOST || window.location.hostname;
+        const port = process.env.NEXT_PUBLIC_WS_PORT || '3334';
+        wsUrl = `${protocol}//${host}:${port}`;
+      }
+    }
 
-    console.log(`Connecting to WebSocket at ${wsUrl}`);
+    console.log(`Connecting to WebSocket at ${wsUrl} (attempt ${connectionAttempts.current})`);
 
     try {
       // Create WebSocket connection
@@ -46,6 +63,7 @@ export function useAgentSocket() {
       socket.addEventListener('open', () => {
         setIsConnected(true);
         setError(null);
+        connectionAttempts.current = 0; // Reset counter on successful connection
         console.log('WebSocket connection established');
       });
 
@@ -58,18 +76,11 @@ export function useAgentSocket() {
             setAgentStatus(data);
           } 
           else if (data.type === 'serverStatus') {
-            // Handle server status messages
             console.log('Received server status:', data);
             
             if (data.status === 'SHUTDOWN') {
-              // Mark server as shutting down to prevent reconnection attempts
               serverShuttingDown.current = true;
-              
-              // Update UI with shutdown message
               setError(`Server is shutting down: ${data.message}`);
-              console.log(`Server shutdown notification: ${data.message}`);
-              
-              // We can still mark as disconnected for UI purposes
               setIsConnected(false);
             }
           }
@@ -83,30 +94,34 @@ export function useAgentSocket() {
         setIsConnected(false);
         console.log('WebSocket connection closed', event.code, event.reason);
         
-        // Try to reconnect after a delay, but only if server isn't shutting down
-        if (!serverShuttingDown.current) {
+        if (!serverShuttingDown.current && connectionAttempts.current < 5) {
+          const backoffTime = Math.min(1000 * (2 ** connectionAttempts.current), 30000);
+          
+          console.log(`Will attempt to reconnect in ${backoffTime}ms`);
+          
           setTimeout(() => {
-            if (socketRef.current?.readyState !== WebSocket.OPEN) {
+            if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
               connect();
             }
-          }, 5000);
+          }, backoffTime);
+        } else if (connectionAttempts.current >= 5) {
+          console.log('Maximum reconnection attempts reached. Please try manual reconnection.');
+          setError('Maximum reconnection attempts reached. Please try manual reconnection.');
         } else {
           console.log('Not attempting to reconnect because server is shutting down');
         }
       });
 
       // Connection error
-      socket.addEventListener('error', () => {
+      socket.addEventListener('error', (event) => {
+        console.error('WebSocket error occurred:', event);
         setError('WebSocket connection error');
-        // Log a more controlled message instead of the entire event
-        // console.error('WebSocket error occurred');
       });
       
       return () => {
         socket.close();
       };
     } catch (error:unknown) {
-      // Properly type the error
       const errorMessage = error instanceof Error 
         ? error.message 
         : 'Unknown connection error';
@@ -114,25 +129,24 @@ export function useAgentSocket() {
       setError(`Failed to create WebSocket connection: ${errorMessage}`);
       console.error('WebSocket connection error:', error);
       
-      // Try to reconnect after a delay if server isn't shutting down
-      if (!serverShuttingDown.current) {
+      if (!serverShuttingDown.current && connectionAttempts.current < 5) {
+        const backoffTime = Math.min(1000 * (2 ** connectionAttempts.current), 30000);
+        
         setTimeout(() => {
           if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
             connect();
           }
-        }, 5000);
+        }, backoffTime);
       }
     }
   }, []);
 
-  // Set up connection on mount
   useEffect(() => {
-    // Reset shutdown flag on mount
     serverShuttingDown.current = false;
+    connectionAttempts.current = 0;
     
     const cleanup = connect();
     
-    // Clean up on unmount
     return () => {
       if (cleanup) cleanup();
       if (socketRef.current) {
@@ -143,8 +157,8 @@ export function useAgentSocket() {
 
   // Function to manually reconnect
   const reconnect = useCallback(() => {
-    // Allow manual reconnection to override shutdown state
     serverShuttingDown.current = false;
+    connectionAttempts.current = 0;
     
     if (socketRef.current) {
       socketRef.current.close();
@@ -157,7 +171,6 @@ export function useAgentSocket() {
     isConnected,
     error,
     reconnect,
-    // Export a property to check if shutdown is in progress
     isServerShuttingDown: serverShuttingDown.current
   };
 }
