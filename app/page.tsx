@@ -391,7 +391,7 @@ export default function Home() {
   // Add a function to check current agent status and update taskId
 const checkCurrentAgent = useCallback(async () => {
   try {
-    const response = await fetch("/api/runAgent");
+    const response = await fetch("/api/running");
     if (!response.ok) return;
     
     const data = await response.json();
