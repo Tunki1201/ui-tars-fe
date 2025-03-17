@@ -30,6 +30,12 @@ interface MessageType {
   timestamp: number
 }
 
+// Define polling data interface
+interface PollingData {
+  statusEndpoint: string
+  pollingIntervalMs: number
+}
+
 export default function Home() {
   const [showWelcome, setShowWelcome] = useState(true)
   const [viewMode, setViewMode] = useState<"chat" | "browser">("chat")
@@ -55,7 +61,7 @@ export default function Home() {
     agentStatus: socketAgentStatus, 
     isConnected, 
     isServerShuttingDown,
-    // reconnect,
+    reconnect,
     error: socketError
   } = useAgentSocket()
 
@@ -72,7 +78,40 @@ export default function Home() {
     }
   }, [socketAgentStatus]);
 
-  // Update UI based on socket status - completely rewritten for simplicity
+  // Function to properly format and update screenshot
+  const updateScreenshot = useCallback((base64Data: string | null, format: string = 'image/jpeg') => {
+    if (!base64Data) return;
+    
+    // Make sure the format is correct
+    let screenshotUrl = '';
+    if (typeof base64Data === 'string' && base64Data.startsWith('data:')) {
+      // Already a data URL
+      screenshotUrl = base64Data;
+    } else {
+      // Create a properly formatted data URL
+      screenshotUrl = `data:${format};base64,${base64Data}`;
+    }
+    
+    // Update timestamp to force refresh
+    setScreenshotTimestamp(Date.now());
+    
+    // Preload the image
+    const img = new window.Image();
+    img.onload = () => {
+      setDisplayedScreenshotUrl(screenshotUrl);
+      setIsImageLoading(false);
+    };
+    
+    img.onerror = (error) => {
+      console.error("Error loading image:", error);
+      setIsImageLoading(false);
+    };
+    
+    setIsImageLoading(true);
+    img.src = screenshotUrl;
+  }, []);
+
+  // Update UI based on socket status
   useEffect(() => {
     if (!socketAgentStatus) return;
     
@@ -86,25 +125,26 @@ export default function Home() {
     
     // Process screenshot if available
     if (socketAgentStatus.screenshot && socketAgentStatus.screenshot.base64) {
-      const screenshotUrl = `data:${socketAgentStatus.screenshot.format || 'image/jpeg'};base64,${socketAgentStatus.screenshot.base64}`
       console.log("New screenshot received, timestamp:", socketAgentStatus.screenshot.timestamp);
       
-      // Always update the screenshot URL and force a refresh with timestamp
-      setScreenshotTimestamp(Date.now());
-      updateScreenshot(screenshotUrl);
+      // Use the updateScreenshot function with correct format
+      updateScreenshot(
+        socketAgentStatus.screenshot.base64,
+        `image/${socketAgentStatus.screenshot.format || 'jpeg'}`
+      );
     }
     
     // Update bot message with received data
     if (socketAgentStatus.isRunning || 
-        (activeTaskIdRef.current && activeTaskIdRef.current === socketAgentStatus.taskId)) {
-      
+        (currentBotMessage && activeTaskIdRef.current === socketAgentStatus.taskId)) {
+        
       setCurrentBotMessage(prev => {
         // Create a new message if there's no existing one
         if (!prev) {
-          return {
+          const newMessage: MessageType = {
             text: socketAgentStatus.instruction || `Agent is running with status: ${socketAgentStatus.status}`,
             isUser: false,
-            isScreenshot: !!displayedScreenshotUrl,
+            isScreenshot: !!socketAgentStatus.screenshot,
             screenshotUrl: displayedScreenshotUrl,
             messageId: `bot-${Date.now()}`,
             timestamp: Date.now(),
@@ -116,20 +156,35 @@ export default function Home() {
               isRunning: socketAgentStatus.isRunning
             }
           };
+          
+          return newMessage;
         }
         
-        // Update existing message with new status
-        return {
-          ...prev,
-          isScreenshot: !!displayedScreenshotUrl,
-          screenshotUrl: displayedScreenshotUrl,
-          taskStatus: {
-            thinking: socketAgentStatus.thinking ? "true" : "false",
-            instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
-            status: socketAgentStatus.status || prev.taskStatus?.status,
-            isRunning: socketAgentStatus.isRunning
-          }
-        };
+        // Check if anything has actually changed to prevent unnecessary updates
+        const hasStatusChange = 
+          socketAgentStatus.thinking !== (prev.taskStatus?.thinking === "true") ||
+          socketAgentStatus.status !== prev.taskStatus?.status ||
+          socketAgentStatus.isRunning !== prev.taskStatus?.isRunning ||
+          socketAgentStatus.instruction !== prev.taskStatus?.instructions;
+            
+        // Only update if something has changed
+        if (hasStatusChange) {
+          // Update existing message
+          return {
+            ...prev,
+            screenshotUrl: displayedScreenshotUrl, // Use the current displayed URL
+            isScreenshot: !!displayedScreenshotUrl,
+            taskStatus: {
+              thinking: socketAgentStatus.thinking ? "true" : "false",
+              instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
+              status: socketAgentStatus.status || prev.taskStatus?.status,
+              isRunning: socketAgentStatus.isRunning
+            }
+          };
+        }
+        
+        // Return previous state if nothing changed
+        return prev;
       });
     }
     
@@ -140,31 +195,85 @@ export default function Home() {
         activeTaskIdRef.current = null;
       }
     }
-  }, [socketAgentStatus, displayedScreenshotUrl]);
+  }, [socketAgentStatus, currentBotMessage, displayedScreenshotUrl, updateScreenshot]);
 
-  // Helper function to update screenshot with proper loading state
-  const updateScreenshot = useCallback((url: string) => {
-    if (!url) return;
+  // Added proper typing for the polling function
+  const startPolling = useCallback((pollingData: PollingData, taskId: string) => {
+    console.log('-----------this is the react component--', taskId)
+    const pollInterval = pollingData.pollingIntervalMs || 2000;
+    let pollCount = 0;
     
-    // Show loading state
-    setIsImageLoading(true);
-    
-    // Preload the image
-    const img = new window.Image();
-    
-    img.onload = () => {
-      setDisplayedScreenshotUrl(url);
-      setIsImageLoading(false);
+    const poll = async () => {
+      if (pollCount > 100) {
+        console.log("Polling stopped after max attempts");
+        return;
+      }
+      
+      try {
+        const response = await fetch(pollingData.statusEndpoint);
+        if (!response.ok) {
+          console.error("Polling error:", response.status);
+          setTimeout(poll, pollInterval);
+          pollCount++;
+          return;
+        }
+        
+        const data = await response.json();
+        console.log("Polling data:", data);
+        
+        // Update UI with polled data
+        setAgentStatus(data.status || "RUNNING");
+        
+        // Update bot message with latest data
+        setCurrentBotMessage(prev => {
+          if (!prev) return prev;
+          
+          return {
+            ...prev,
+            text: data.thinking ? "Thinking..." : (data.instructions || prev.text),
+            taskStatus: {
+              thinking: data.thinking ? "true" : "false",
+              instructions: data.instructions || prev.taskStatus?.instructions,
+              status: data.status || prev.taskStatus?.status,
+              isRunning: data.isRunning !== undefined ? data.isRunning : prev.taskStatus?.isRunning
+            }
+          };
+        });
+        
+        // Check for screenshot in polled data
+        if (data.screenshot && data.screenshot.base64) {
+          updateScreenshot(
+            data.screenshot.base64,
+            `image/${data.screenshot.format || 'jpeg'}`
+          );
+        }
+        
+        // Continue polling if task is still running
+        if (data.isRunning || data.status === "RUNNING" || data.status === "THINKING") {
+          setTimeout(poll, pollInterval);
+          pollCount++;
+        } else {
+          console.log("Polling complete - task finished with status:", data.status);
+        }
+      } catch (error) {
+        console.error("Error during polling:", error);
+        setTimeout(poll, pollInterval);
+        pollCount++;
+      }
     };
     
-    img.onerror = () => {
-      console.error("Error loading screenshot image");
-      setIsImageLoading(false);
-    };
-    
-    // Set src to start loading
-    img.src = url;
-  }, []);
+    // Start polling
+    poll();
+  }, [updateScreenshot]);
+
+  // API request with proper typing
+  // const fetchData = async <T,>(endpoint: string, options?: RequestInit): Promise<T> => {
+  //   const response = await fetch(endpoint, options);
+  //   if (!response.ok) {
+  //     throw new Error(`API error: ${response.status}`);
+  //   }
+  //   return response.json() as Promise<T>;
+  // };
 
   // Check initial agent status on mount
   useEffect(() => {
@@ -184,16 +293,11 @@ export default function Home() {
             activeTaskIdRef.current = data.taskId
           }
           
-          // Process screenshot if available
-          if (data.screenshot?.dataUrl) {
-            updateScreenshot(data.screenshot.dataUrl);
-          }
-          
           // Initialize bot message with available data
           setCurrentBotMessage({
             text: data.taskStatus?.instructions || `Agent is currently running with status: ${data.status}`,
             isUser: false,
-            isScreenshot: !!data.screenshot?.dataUrl,
+            isScreenshot: !!data.screenshot,
             screenshotUrl: data.screenshot?.dataUrl || null,
             messageId: `bot-${Date.now()}`,
             timestamp: Date.now(),
@@ -210,7 +314,7 @@ export default function Home() {
     if (!isConnected) {
       checkInitialAgentStatus()
     }
-  }, [isConnected, updateScreenshot])
+  }, [isConnected])
 
   const handleSendMessage = async (message: string) => {
     // Don't allow sending messages if server is shutting down
@@ -230,11 +334,11 @@ export default function Home() {
     }
 
     setCurrentUserMessage(userMessage)
-    
-    // Reset status and screenshot for new conversation
     setAgentStatus("IDLE")
+
+    // Reset screenshot state for new conversation
     setDisplayedScreenshotUrl(null)
-    setScreenshotTimestamp(0)
+    // loadingUrlRef.current = null;
 
     try {
       const response = await fetch("/api/runAgent", {
@@ -250,11 +354,15 @@ export default function Home() {
       }
 
       const data = await response.json()
-      console.log("Run agent response:", data);
 
       // Set the task ID for reference (socket will handle the updates)
       if (data.taskId) {
         activeTaskIdRef.current = data.taskId
+      }
+      
+      // Start polling if _polling data is available and WebSocket isn't connected
+      if (data._polling && !isConnected) {
+        startPolling(data._polling, data.taskId);
       }
       
       // Initialize bot message (WebSocket will update it)
@@ -262,21 +370,10 @@ export default function Home() {
         text: "Processing...",
         isUser: false,
         isScreenshot: false,
-        screenshotUrl: null,
         taskId: data.taskId,
         messageId: `bot-${Date.now()}`,
         timestamp: Date.now(),
-        taskStatus: {
-          thinking: "true",
-          status: "RUNNING",
-          isRunning: true
-        }
       })
-      
-      // Start polling if WebSocket is not connected
-      if (!isConnected && data._polling) {
-        startPolling(data._polling.statusEndpoint, data._polling.pollingIntervalMs || 2000);
-      }
     } catch (error) {
       console.error("Error sending message:", error)
 
@@ -330,13 +427,11 @@ export default function Home() {
         body: JSON.stringify({ taskId }),
       })
 
-      console.log("Stop agent response status:", response.status)
-      
       if (!response.ok) {
-        throw new Error(`Failed to stop agent: ${response.statusText}`)
+        throw new Error("Failed to stop agent")
       }
       
-      // Update UI immediately after successful stop, don't wait for WebSocket
+      // Update UI after successful stop
       setAgentStatus("STOPPED")
       setCurrentBotMessage((prev) => {
         if (!prev) return prev
@@ -346,23 +441,23 @@ export default function Home() {
             ...prev.taskStatus,
             status: "STOPPED",
             isRunning: false,
-            instructions: "Agent was stopped by user request.",
+            instructions: "Agent stopped successfully",
           },
         }
       })
       
-      // Clear the active task ID
+      // Clear active task ID
       activeTaskIdRef.current = null
       
-      // Make an additional status request to get the final state
+      // Get final status just to be sure
       try {
-        const statusResponse = await fetch(`/api/task-status/${taskId}`)
+        const statusResponse = await fetch(`/api/taskStatus/${taskId}`)
         if (statusResponse.ok) {
           const statusData = await statusResponse.json()
           console.log("Final task status after stopping:", statusData)
         }
       } catch (statusError) {
-        console.error("Error getting final task status:", statusError)
+        console.warn("Error fetching final task status:", statusError)
       }
       
     } catch (error) {
@@ -372,7 +467,6 @@ export default function Home() {
       setAgentStatus("ERROR")
       setCurrentBotMessage((prev) => {
         if (!prev) return prev
-
         return {
           ...prev,
           taskStatus: {
@@ -386,78 +480,6 @@ export default function Home() {
     }
   }
 
-  // Start polling for status if WebSocket is not connected
-  const startPolling = useCallback((endpoint: string, interval: number) => {
-    console.log(`Starting polling: ${endpoint} every ${interval}ms`);
-    
-    const poll = async () => {
-      if (!activeTaskIdRef.current) {
-        console.log("No active task to poll for");
-        return;
-      }
-      
-      try {
-        const response = await fetch(endpoint);
-        if (!response.ok) {
-          console.error("Error polling for status:", response.statusText);
-          return;
-        }
-        
-        const data = await response.json();
-        console.log("Polled status:", data);
-        
-        // Update UI with polled status
-        const status = data.status || "RUNNING";
-        setAgentStatus(status);
-        
-        // Update bot message
-        setCurrentBotMessage(prev => {
-          if (!prev) return prev;
-          
-          return {
-            ...prev,
-            text: data.instructions || "Processing...",
-            taskStatus: {
-              thinking: data.thinking ? "true" : "false",
-              instructions: data.instructions || prev.taskStatus?.instructions,
-              status: status,
-              isRunning: status !== "END" && status !== "STOPPED" && status !== "ERROR"
-            }
-          };
-        });
-        
-        // Handle screenshot from polling
-        if (data.screenshot) {
-          console.log("Got screenshot in polling, updating it");
-          setScreenshotTimestamp(Date.now()); // Force refresh
-          updateScreenshot(data.screenshot);
-          
-          // Update bot message to show screenshot
-          setCurrentBotMessage(prev => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              isScreenshot: true,
-              screenshotUrl: data.screenshot
-            };
-          });
-        }
-        
-        // Continue polling if task is still running
-        if (status !== "END" && status !== "STOPPED" && status !== "ERROR") {
-          setTimeout(poll, interval);
-        } else {
-          console.log("Task completed, stopping polling");
-        }
-      } catch (error) {
-        console.error("Error polling for status:", error);
-      }
-    };
-    
-    // Start polling
-    poll();
-  }, [updateScreenshot]);
-
   // Render the current message based on view mode
   const renderCurrentMessage = () => {
     if (viewMode === "browser") {
@@ -469,13 +491,14 @@ export default function Home() {
               {/* Use a container with fixed dimensions */}
               <div className="w-full h-full overflow-hidden">
                 <Image
-                  src={`${displayedScreenshotUrl}?t=${screenshotTimestamp}`}
+                  src={displayedScreenshotUrl}
                   alt="Screenshot result"
                   width={1200}
                   height={900}
                   className={`w-full h-full object-contain transition-opacity duration-300 ${isImageLoading ? "opacity-0" : "opacity-100"}`}
                   priority
                   unoptimized={true}
+                  key={screenshotTimestamp}
                 />
               </div>
 
@@ -501,53 +524,54 @@ export default function Home() {
           )}
 
           {currentBotMessage && (
-            <div key={currentBotMessage.messageId} className="mb-4 p-4">
-            <Card className="inline-block p-3 max-w-[80%] text-secondary-foreground">
-              {currentBotMessage.isScreenshot ? (
-                <div className="space-y-3">
-                  {currentBotMessage.taskStatus && (
-                    <div className="mb-3 text-sm">
-                      <div className="font-medium mb-1">Status: {currentBotMessage.taskStatus?.status}</div>
+            <div key={`${currentBotMessage.messageId}-${screenshotTimestamp}`} className="mb-4 p-4">
+              <Card className="inline-block p-3 max-w-[80%] text-secondary-foreground">
+                {currentBotMessage.isScreenshot ? (
+                  <div className="space-y-3">
+                    {currentBotMessage.taskStatus && (
+                      <div className="mb-3 text-sm">
+                        <div className="font-medium mb-1">Status: {currentBotMessage.taskStatus?.status}</div>
 
-                      {currentBotMessage.taskStatus?.instructions && (
-                        <div className="mb-2">
-                          <div className="font-medium">Instructions:</div>
-                          <div className="pl-2 text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                            {currentBotMessage.taskStatus?.instructions}
+                        {currentBotMessage.taskStatus?.instructions && (
+                          <div className="mb-2">
+                            <div className="font-medium">Instructions:</div>
+                            <div className="pl-2 text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                              {currentBotMessage.taskStatus?.instructions}
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {/* Add screenshot in chat mode */}
-                  {displayedScreenshotUrl && (
-                    <div className="relative mt-3">
-                      <div className="overflow-hidden rounded-md">
-                        <Image
-                          src={`${displayedScreenshotUrl}?t=${screenshotTimestamp}`}
-                          alt="Screenshot result"
-                          width={800}
-                          height={600}
-                          className={`object-contain transition-opacity duration-300 ${isImageLoading ? "opacity-0" : "opacity-100"}`}
-                          priority
-                          unoptimized={true}
-                        />
+                        )}
                       </div>
-                      
-                      {isImageLoading && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-background/50">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                    )}
+                    
+                    {/* Add screenshot in chat mode */}
+                    {displayedScreenshotUrl && (
+                      <div className="relative mt-3">
+                        <div className="overflow-hidden rounded-md">
+                          <Image
+                            src={displayedScreenshotUrl}
+                            alt="Screenshot result"
+                            width={800}
+                            height={600}
+                            className={`object-contain transition-opacity duration-300 ${isImageLoading ? "opacity-0" : "opacity-100"}`}
+                            priority
+                            unoptimized={true}
+                            key={screenshotTimestamp} // Force re-render when new screenshot arrives
+                          />
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                currentBotMessage.text
-              )}
-            </Card>
-          </div>
+                        
+                        {isImageLoading && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-background/50">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  currentBotMessage.text
+                )}
+              </Card>
+            </div>
           )}
         </>
       )
@@ -555,17 +579,17 @@ export default function Home() {
   }
 
   // Add explicit reconnection function
-  // const tryReconnect = useCallback(() => {
-  //   console.log("Manually triggering reconnection");
-  //   reconnect();
-  // }, [reconnect]);
+  const tryReconnect = useCallback(() => {
+    console.log("Manually triggering reconnection");
+    reconnect();
+  }, [reconnect]);
 
-  // // Add connection status UI back
-  // const connectionStatus = !isConnected ? {
-  //   message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
-  //   bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
-  //   textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
-  // } : null;
+  // Add connection status UI back
+  const connectionStatus = !isConnected ? {
+    message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
+    bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
+    textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
+  } : null;
 
   return (
     <div className={`flex h-screen ${theme === "light" ? "light-mode-gradient" : "bg-background"}`}>
@@ -588,7 +612,7 @@ export default function Home() {
           )}
           
           {/* Show connection status */}
-          {/* {connectionStatus && (
+          {connectionStatus && (
             <div className={`absolute bottom-4 right-4 ${connectionStatus.bgClass} ${connectionStatus.textClass} px-3 py-1 rounded-md text-sm flex items-center`}>
               <span>{connectionStatus.message}</span>
               {!isServerShuttingDown && (
@@ -600,7 +624,7 @@ export default function Home() {
                 </button>
               )}
             </div>
-          )} */}
+          )}
         </div>
         <div className="p-4">
           <TradeActions setInputValue={setInputValue} />
