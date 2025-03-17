@@ -61,7 +61,7 @@ export default function Home() {
     agentStatus: socketAgentStatus, 
     isConnected, 
     isServerShuttingDown,
-    reconnect,
+    // reconnect,
     error: socketError
   } = useAgentSocket()
 
@@ -578,18 +578,18 @@ export default function Home() {
     }
   }
 
-  // Add explicit reconnection function
-  const tryReconnect = useCallback(() => {
-    console.log("Manually triggering reconnection");
-    reconnect();
-  }, [reconnect]);
+  // // Add explicit reconnection function
+  // const tryReconnect = useCallback(() => {
+  //   console.log("Manually triggering reconnection");
+  //   reconnect();
+  // }, [reconnect]);
 
-  // Add connection status UI back
-  const connectionStatus = !isConnected ? {
-    message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
-    bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
-    textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
-  } : null;
+  // // Add connection status UI back
+  // const connectionStatus = !isConnected ? {
+  //   message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
+  //   bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
+  //   textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
+  // } : null;
 
   return (
     <div className={`flex h-screen ${theme === "light" ? "light-mode-gradient" : "bg-background"}`}>
@@ -612,7 +612,7 @@ export default function Home() {
           )}
           
           {/* Show connection status */}
-          {connectionStatus && (
+          {/* {connectionStatus && (
             <div className={`absolute bottom-4 right-4 ${connectionStatus.bgClass} ${connectionStatus.textClass} px-3 py-1 rounded-md text-sm flex items-center`}>
               <span>{connectionStatus.message}</span>
               {!isServerShuttingDown && (
@@ -624,7 +624,7 @@ export default function Home() {
                 </button>
               )}
             </div>
-          )}
+          )} */}
         </div>
         <div className="p-4">
           <TradeActions setInputValue={setInputValue} />
