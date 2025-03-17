@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef } from "react"
 import Sidebar from "@/components/sidebar"
 import ChatHeader from "@/components/chat-header"
 import WelcomeModal from "@/components/welcome-modal"
@@ -17,7 +17,7 @@ interface MessageType {
   text: string
   isUser: boolean
   isScreenshot?: boolean
-  screenshotUrl?: string | null  // Allow null value
+  screenshotUrl?: string | null
   taskId?: string
   taskStatus?: {
     thinking?: string
@@ -28,20 +28,6 @@ interface MessageType {
   isError?: boolean
   messageId: string
   timestamp: number
-}
-
-// Define the AgentStatus type
-interface AgentStatus {
-  status?: string
-  taskId?: string
-  thinking?: boolean
-  instruction?: string
-  isRunning?: boolean
-  screenshot?: {
-    format?: string
-    base64?: string
-    timestamp?: string
-  }
 }
 
 export default function Home() {
@@ -57,9 +43,9 @@ export default function Home() {
   const [displayedScreenshotUrl, setDisplayedScreenshotUrl] = useState<string | null>(null)
   const [isImageLoading, setIsImageLoading] = useState(false)
   
-  // Add a ref to track the URL we're currently loading
+  // Add refs to track URLs and prevent unnecessary rerenders
   const loadingUrlRef = useRef<string | null>(null)
-  const previousScreenshotUrlRef = useRef<string | null>(null)
+  const currentBotMessageUrlRef = useRef<string | null>(null)
 
   const { theme } = useTheme()
   const activeTaskIdRef = useRef<string | null>(null)
@@ -73,61 +59,6 @@ export default function Home() {
     // reconnect
   } = useAgentSocket()
 
-  // Memoize the bot message update function to prevent infinite loops
-  const updateBotMessage = useCallback((status: AgentStatus) => {
-    // Convert screenshot to data URL format if needed
-    let screenshotUrl: string | null = null
-    if (status.screenshot && status.screenshot.base64) {
-      screenshotUrl = `data:${status.screenshot.format || 'image/jpeg'};base64,${status.screenshot.base64}`
-    }
-    
-    // Update bot message with received data
-    if (status.isRunning || 
-        (currentBotMessage && activeTaskIdRef.current === status.taskId)) {
-      
-      setCurrentBotMessage(prev => {
-        // Create a new message if there's no existing one
-        if (!prev) {
-          return {
-            text: status.instruction || `Agent is running with status: ${status.status}`,
-            isUser: false,
-            isScreenshot: !!screenshotUrl,
-            screenshotUrl,  // This can be null
-            messageId: `bot-${Date.now()}`,
-            timestamp: Date.now(),
-            taskId: status.taskId,
-            taskStatus: {
-              thinking: status.thinking ? "true" : "false",
-              instructions: status.instruction,
-              status: status.status,
-              isRunning: status.isRunning
-            }
-          };
-        }
-        
-        // Don't update if nothing changed
-        if (prev.screenshotUrl === screenshotUrl && 
-            prev.taskStatus?.status === status.status &&
-            prev.taskStatus?.thinking === (status.thinking ? "true" : "false") && 
-            prev.taskStatus?.instructions === status.instruction) {
-          return prev;  // Return the same object to prevent re-render
-        }
-        
-        // Update existing message
-        return {
-          ...prev,
-          screenshotUrl: screenshotUrl || prev.screenshotUrl,
-          taskStatus: {
-            thinking: status.thinking ? "true" : "false",
-            instructions: status.instruction || prev.taskStatus?.instructions,
-            status: status.status || prev.taskStatus?.status,
-            isRunning: status.isRunning
-          }
-        };
-      });
-    }
-  }, [currentBotMessage]);
-
   // Update UI based on socket status
   useEffect(() => {
     if (socketAgentStatus) {
@@ -139,8 +70,75 @@ export default function Home() {
         activeTaskIdRef.current = socketAgentStatus.taskId
       }
       
-      // Use the memoized function to update bot message
-      updateBotMessage(socketAgentStatus);
+      // Convert screenshot to data URL format if needed
+      let screenshotUrl: string | null = null
+      if (socketAgentStatus.screenshot && socketAgentStatus.screenshot.base64) {
+        screenshotUrl = `data:${socketAgentStatus.screenshot.format || 'image/jpeg'};base64,${socketAgentStatus.screenshot.base64}`
+      }
+      
+      // Update bot message with received data
+      if (socketAgentStatus.isRunning || 
+          (currentBotMessage && activeTaskIdRef.current === socketAgentStatus.taskId)) {
+        
+        setCurrentBotMessage(prev => {
+          // Create a new message if there's no existing one
+          if (!prev) {
+            const newMessage = {
+              text: socketAgentStatus.instruction || `Agent is running with status: ${socketAgentStatus.status}`,
+              isUser: false,
+              isScreenshot: !!screenshotUrl,
+              screenshotUrl,  // This can be null
+              messageId: `bot-${Date.now()}`,
+              timestamp: Date.now(),
+              taskId: socketAgentStatus.taskId,
+              taskStatus: {
+                thinking: socketAgentStatus.thinking ? "true" : "false",
+                instructions: socketAgentStatus.instruction,
+                status: socketAgentStatus.status,
+                isRunning: socketAgentStatus.isRunning
+              }
+            };
+            
+            // Store the current URL in the ref to prevent loops
+            if (screenshotUrl) {
+              currentBotMessageUrlRef.current = screenshotUrl;
+            }
+            
+            return newMessage;
+          }
+          
+          // Check if anything has actually changed to prevent unnecessary updates
+          const hasNewScreenshot = screenshotUrl && screenshotUrl !== prev.screenshotUrl;
+          const hasStatusChange = 
+            socketAgentStatus.thinking !== (prev.taskStatus?.thinking === "true") ||
+            socketAgentStatus.status !== prev.taskStatus?.status ||
+            socketAgentStatus.isRunning !== prev.taskStatus?.isRunning ||
+            socketAgentStatus.instruction !== prev.taskStatus?.instructions;
+            
+          // Only update if something has changed
+          if (hasNewScreenshot || hasStatusChange) {
+            // Store the current URL in the ref to prevent loops
+            if (hasNewScreenshot) {
+              currentBotMessageUrlRef.current = screenshotUrl;
+            }
+            
+            // Update existing message
+            return {
+              ...prev,
+              screenshotUrl: hasNewScreenshot ? screenshotUrl : prev.screenshotUrl,
+              taskStatus: {
+                thinking: socketAgentStatus.thinking ? "true" : "false",
+                instructions: socketAgentStatus.instruction || prev.taskStatus?.instructions,
+                status: socketAgentStatus.status || prev.taskStatus?.status,
+                isRunning: socketAgentStatus.isRunning
+              }
+            };
+          }
+          
+          // Return previous state if nothing changed
+          return prev;
+        });
+      }
       
       // Check for completed task
       if (!socketAgentStatus.isRunning && activeTaskIdRef.current) {
@@ -150,54 +148,52 @@ export default function Home() {
         }
       }
     }
-  }, [socketAgentStatus, updateBotMessage]);
+  }, [socketAgentStatus, currentBotMessage]);
 
-  // Handle screenshot loading with fixed dependencies
+  // Fixed screenshot handling to prevent infinite loops
   useEffect(() => {
+    // Get the current URL from the bot message
     const url = currentBotMessage?.screenshotUrl;
     
-    // Skip if no URL or it's the same as what we're already displaying or loading
-    if (!url || url === displayedScreenshotUrl || url === loadingUrlRef.current) {
-      return;
+    // Only proceed if we have a URL and it's different from what's displayed
+    // and it's not already being loaded
+    if (url && 
+        url !== displayedScreenshotUrl && 
+        url !== loadingUrlRef.current &&
+        url !== currentBotMessageUrlRef.current) {
+      
+      // Mark this URL as being loaded
+      loadingUrlRef.current = url;
+      
+      // Show loading state
+      setIsImageLoading(true);
+      
+      // Preload the image
+      const img = new window.Image()
+      img.onload = () => {
+        // Only update if this is still the URL we want to show
+        if (loadingUrlRef.current === url) {
+          setDisplayedScreenshotUrl(url);
+          setIsImageLoading(false);
+          loadingUrlRef.current = null;
+          currentBotMessageUrlRef.current = url;
+        }
+      };
+      
+      img.onerror = () => {
+        // Clear loading state on error
+        if (loadingUrlRef.current === url) {
+          setIsImageLoading(false);
+          loadingUrlRef.current = null;
+        }
+      };
+      
+      // Start loading
+      img.src = url;
     }
-    
-    // Skip if it's the same as the previous URL we processed (prevents loops)
-    if (url === previousScreenshotUrlRef.current) {
-      return;
-    }
-    
-    // Update our reference to what we're currently processing
-    previousScreenshotUrlRef.current = url;
-    loadingUrlRef.current = url;
-    
-    // Show loading state
-    setIsImageLoading(true);
-    
-    // Preload the image
-    const img = new window.Image()
-    img.onload = () => {
-      // Only update if this is still the URL we want to show
-      if (loadingUrlRef.current === url) {
-        setDisplayedScreenshotUrl(url);
-        setIsImageLoading(false);
-        loadingUrlRef.current = null;
-      }
-    };
-    
-    img.onerror = () => {
-      // Clear loading state on error
-      if (loadingUrlRef.current === url) {
-        setIsImageLoading(false);
-        loadingUrlRef.current = null;
-      }
-    };
-    
-    // Start loading
-    img.src = url;
-    
   }, [currentBotMessage?.screenshotUrl, displayedScreenshotUrl]);
-
-  // Check initial agent status on mount
+  
+// Check initial agent status on mount
   useEffect(() => {
     const checkInitialAgentStatus = async () => {
       try {
@@ -260,7 +256,7 @@ export default function Home() {
 
     // Reset screenshot state for new conversation
     setDisplayedScreenshotUrl(null)
-    previousScreenshotUrlRef.current = null;
+    // previousScreenshotUrlRef.current = null;
     loadingUrlRef.current = null;
 
     try {
@@ -447,12 +443,6 @@ export default function Home() {
     }
   }
 
-  // Show connection status message if disconnected or server shutting down
-  // const connectionStatus = !isConnected ? {
-  //   message: isServerShuttingDown ? "Server shutting down" : "WebSocket disconnected",
-  //   bgClass: isServerShuttingDown ? "bg-orange-100 dark:bg-orange-900" : "bg-red-100 dark:bg-red-900",
-  //   textClass: isServerShuttingDown ? "text-orange-800 dark:text-orange-100" : "text-red-800 dark:text-red-100"
-  // } : null;
 
   return (
     <div className={`flex h-screen ${theme === "light" ? "light-mode-gradient" : "bg-background"}`}>
