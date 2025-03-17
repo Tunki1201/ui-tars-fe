@@ -451,7 +451,7 @@ export default function Home() {
       
       // Get final status just to be sure
       try {
-        const statusResponse = await fetch(`/api/taskStatus/${taskId}`)
+        const statusResponse = await fetch(`/api/task-status/${taskId}`)
         if (statusResponse.ok) {
           const statusData = await statusResponse.json()
           console.log("Final task status after stopping:", statusData)
